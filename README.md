@@ -1,1 +1,1 @@
-# HArats_multiomics
+# Multi-omics analysis on hyperammonemic rats
