@@ -1,1 +1,7 @@
+# Preprocessed RNA-Seq data: RNAseq_data.csv or .txt . Centered and log2-transformed.
+# Preprocessed microRNA-Seq data: miRNAs_data.csv or .txt . Centered and log2-transformed.
+# Preprocessed proteomics data: proteomic_data.csv or .txt . Centered and log2-transformed.
+# Preprocessed SNP data: SNPs_gene.csv . Centered and log2-transformed.
+# Preprocessed metabolomics data: metabolomic_data.txt . Centered, scaled and no log2-transformed.
 
+# To apply integration techniques, metabolomics data must be log2-transformed. The function is provided in all analysis scripts.
