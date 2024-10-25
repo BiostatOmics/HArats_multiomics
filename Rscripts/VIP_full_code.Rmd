@@ -1,0 +1,701 @@
+---
+title: "VIP (Variable Importance in Projection)"
+author: "Sofia Cámara Sánchez"
+date: "2024-10-03"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## 1) Multi-block model
+
+```{r}
+library(mixOmics)
+```
+
+Data are log2 transformed.
+
+```{r}
+miRNAs = read.table("miRNAs_data.txt", header = TRUE, row.names = 1, 
+                    sep = "\t", stringsAsFactors = TRUE)
+RNAseq = read.table("RNAseq_data.txt", header = TRUE, row.names = 1, 
+                    sep = "\t", stringsAsFactors = TRUE)
+Prot = read.table("proteomic_data.txt", header = TRUE, row.names = 1, 
+                  sep = "\t", stringsAsFactors = TRUE)
+Met = read.table("metabolomic_data.txt", header = TRUE, row.names = 1, 
+                 sep = "\t", stringsAsFactors = TRUE)
+SNPs = read.csv("SNPs_gene.csv", header = TRUE, row.names = 1, sep = ",")
+
+Met = log2(Met)
+```
+
+```{r}
+t_miRNAs = t(miRNAs)
+t_RNAseq = t(RNAseq)
+t_Prot = t(Prot)
+t_Met = t(Met)
+t_SNPs = t(SNPs)
+
+t_miRNAs = scale(t_miRNAs, center = TRUE, scale = FALSE)
+t_RNAseq = scale(t_RNAseq, center = TRUE, scale = FALSE)
+t_Prot = scale(t_Prot, center = TRUE, scale = FALSE)
+t_Met = scale(t_Met, center = TRUE, scale = TRUE)
+t_SNPs = scale(t_SNPs, center = TRUE, scale = FALSE)
+```
+
+```{r}
+data = list(rnaseq = t_RNAseq, 
+            mirna = t_miRNAs, 
+            prot = t_Prot, 
+            met = t_Met, 
+            snp = t_SNPs)
+
+Y = rep(c("C", "H"), each = 8)
+```
+
+```{r}
+definitive_design = matrix(0, ncol = length(data), nrow = length(data),
+                           dimnames = list(names(data), names(data)))
+
+definitive_design[1,2] = 0.57
+definitive_design[1,3] = 0.85
+definitive_design[1,4] = 0.44
+definitive_design[1,5] = 0.9
+
+definitive_design[2,1] = 0.57
+definitive_design[2,3] = 0.62
+definitive_design[2,4] = 0.1
+definitive_design[2,5] = 0.6
+
+definitive_design[3,1] = 0.85
+definitive_design[3,2] = 0.62
+definitive_design[3,4] = 0.45
+definitive_design[3,5] = 0.95
+
+definitive_design[4,1] = 0.44
+definitive_design[4,2] = 0.1
+definitive_design[4,3] = 0.45
+definitive_design[4,5] = 0.39
+
+definitive_design[5,1] = 0.9
+definitive_design[5,2] = 0.6
+definitive_design[5,3] = 0.95
+definitive_design[5,4] = 0.39
+
+definitive_design
+```
+The parameters previously obtained from the mixOmics study are adjusted for the next DIABLO model. We adjust the Design Matrix and the optimal number of components, but we do not perform variable selection. All variables are used since the selection will be done later based on the VIP value.
+
+```{r}
+diablo_VIP = block.splsda(X = data, Y = Y, scale = FALSE, ncomp = 2, 
+                          design = definitive_design, 
+                          near.zero.var = TRUE)
+```
+
+## 2) VIP function
+
+This is the VIP calculation function from the mixOmics package. The issue is that it only works for single-block models, so it is modified and adapted for multi-block models.
+
+```{r, eval=FALSE}
+vip_mixOmics = function(object)
+    {
+        if (any(class(object) %in% c("mixo_plsda","mixo_splsda")))
+        {
+            object$Y = object$ind.mat
+        } else if (any(class(object) %in% c("mixo_pls","mixo_spls"))) {
+            #nothing
+        } else {
+            stop( " 'vip' is only implemented for the following objects: 
+                  pls, plsda, spls, splsda", call.=FALSE)
+        }
+        #-- initialisation des matrices --#
+        W = object$loadings$X
+        H = object$ncomp
+        q = ncol(object$Y)
+        p = ncol(object$X)
+        VIP = matrix(0, nrow = p, ncol = H)
+        
+        cor2 = cor(object$Y, object$variates$X, use = "pairwise")^2
+        cor2 = as.matrix(cor2, nrow = q)
+        
+        VIP[, 1] = W[, 1]^2
+        
+        if (H > 1)
+        {
+            for (h in 2:H)
+            {
+                if (q == 1)
+                {
+                    Rd = cor2[, 1:h] 
+                    VIP[, h] = Rd %*% t(W[, 1:h]^2) / sum(Rd)
+                } else {
+                    Rd = apply(cor2[, 1:h], 2, sum)
+                    VIP[, h] = Rd %*% t(W[, 1:h]^2) / sum(Rd)
+                }
+            }
+        }
+        
+        #-- valeurs sortantes --#
+        VIP = sqrt(p * VIP)
+        rownames(VIP) = rownames(W)
+        colnames(VIP)= paste0("comp", 1:H)
+        
+        return(invisible(VIP))
+    }
+```
+
+The following function `accumulated_vip_block` calculates and returns the cumulative VIP. It takes as input the multi-block model (DIABLO), the omic we want to work with, and the number of components to evaluate. 
+
+The calculation of the VIP is based on taking the loading weight vectors generated in the model and returns the average, the sum of the VIP by variable and component, divided by the total number of components.
+
+```{r}
+accumulated_vip_block = function(object, block, ncomp){
+  
+        if (class(block)!='character'){stop("'block' has to be a character")}
+        if (any(class(object) %in% c("block.splsda", "block.spls", "block.plsda"))){
+        Y = object$ind.mat }
+        else{
+          stop( " 'vip_block' is only implemented for the following objects:
+                block.splsda or block.plsda ", call.=FALSE) }
+  
+      
+        W = object$loadings[[block]]
+        H = ncomp
+        q = ncol(Y)
+        p = ncol(object$X[[block]])
+        VIP = matrix(0, nrow = p, ncol = H)
+        
+        cor2 = cor(Y, object$variates[[block]], use = "pairwise")^2
+        cor2 = as.matrix(cor2, nrow = q)
+        
+        VIP[, 1] = W[, 1]^2
+        
+        if (H > 1)  # If there are more than 1 component
+        {
+            for (h in 2:H)
+            {
+                if (q == 1)
+                {
+                    Rd = cor2[, 1:h] 
+                    VIP[, h] = Rd %*% t(W[, 1:h]^2) / sum(Rd)
+                } else {
+                    Rd = apply(cor2[, 1:h], 2, sum)
+                    VIP[, h] = Rd %*% t(W[, 1:h]^2) / sum(Rd)
+                }
+            }
+        }
+        
+        # VIP calculation
+        VIP = sqrt(p * VIP)  
+        rownames(VIP) = rownames(W)
+        colnames(VIP)= paste0("comp", 1:H)
+        
+        # accumulated vip 
+        sum_rows = rowSums(VIP)  
+        ncomp = ncol(VIP)
+        accumulated_vip = sum_rows / ncomp
+
+        vip_result = data.frame(Accumulated_VIP = accumulated_vip)
+        
+        return(invisible(vip_result))
+}
+```
+
+To determine how many components to use for each omic, we observe their distributions through **score plots**.
+
+### 2.1) RNA-Seq score plots
+
+```{r}
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "rnaseq", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE)
+
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "rnaseq", ind.names = TRUE, 
+          ellipse = TRUE, legend = TRUE)
+```
+
+### 2.2) microRNA-Seq score plots
+
+```{r}
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "mirna", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE)
+
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "mirna", ind.names = TRUE, 
+          ellipse = TRUE, legend = TRUE)
+```
+
+### 2.3) Proteomics score plots
+
+```{r}
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "prot", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE)
+
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "prot", ind.names = TRUE, 
+          ellipse = TRUE, legend = TRUE)
+```
+
+### 2.4) Metabolomics score plots
+
+```{r}
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "met", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE)
+
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "met", ind.names = TRUE, 
+          ellipse = TRUE, legend = TRUE)
+```
+
+### 2.5) SNP score plots
+
+```{r}
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "snp", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE)
+
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "snp", ind.names = TRUE, 
+          ellipse = TRUE, legend = TRUE)
+```
+
+As can be seen in the graphs, component 1 is sufficient to separate the classes well, except for the miRNAs data, for which component 2 will also be necessary.
+
+We calculate the VIP for each omic with the corresponding number of components. We check how many variables have VIP values greater than 1, as this is the threshold to consider the variables relevant.
+
+```{r}
+result_rnaseq = accumulated_vip_block(diablo_VIP, "rnaseq", ncomp = 1)
+result_mirna = accumulated_vip_block(diablo_VIP, "mirna", ncomp = 2)
+result_prot = accumulated_vip_block(diablo_VIP, "prot", ncomp = 1)
+result_met = accumulated_vip_block(diablo_VIP, "met", ncomp = 1)
+result_snp = accumulated_vip_block(diablo_VIP, "snp", ncomp = 1)
+
+sum(result_rnaseq$Accumulated_VIP > 1) 
+sum(result_mirna$Accumulated_VIP > 1)  
+sum(result_prot$Accumulated_VIP > 1)  
+sum(result_met$Accumulated_VIP > 1)  
+sum(result_snp$Accumulated_VIP > 1) 
+```
+
+## 3) Density plots
+
+Our goal now is to generate a network to visualize these selected variables. However, some omics have excessive variables, such as RNA-Seq with 2603, and this would overwhelm the network. To avoid this, we will select a lower number and use density plots to assist us.
+
+```{r}
+filtered = result_rnaseq[result_rnaseq$Accumulated_VIP > 1, , drop = FALSE]
+ggplot(filtered, aes(x = Accumulated_VIP)) +
+  geom_density(fill = "orange", color = "black", alpha = 0.7) +
+  xlab("VIP") +
+  ylab("Density") +
+  ggtitle("RNAseq VIP>1")
+
+filtered = result_mirna[result_mirna$Accumulated_VIP > 1, , drop = FALSE]
+ggplot(filtered, aes(x = Accumulated_VIP)) +
+  geom_density(fill = "orange", color = "black", alpha = 0.7) +
+  xlab("VIP") +
+  ylab("Density") +
+  ggtitle("miRNAs VIP>1")
+
+filtered = result_prot[result_prot$Accumulated_VIP > 1, , drop = FALSE]
+ggplot(filtered, aes(x = Accumulated_VIP)) +
+  geom_density(fill = "orange", color = "black", alpha = 0.7) +
+  xlab("VIP") +
+  ylab("Density") +
+  ggtitle("Proteomics VIP>1")
+
+filtered = result_met[result_met$Accumulated_VIP > 1, , drop = FALSE]
+ggplot(filtered, aes(x = Accumulated_VIP)) +
+  geom_density(fill = "orange", color = "black", alpha = 0.7) +
+  xlab("VIP") +
+  ylab("Density") +
+  ggtitle("Metabolomics VIP>1")
+
+filtered = result_snp[result_snp$Accumulated_VIP > 1, , drop = FALSE]
+ggplot(filtered, aes(x = Accumulated_VIP)) +
+  geom_density(fill = "orange", color = "black", alpha = 0.7) +
+  xlab("VIP") +
+  ylab("Density") +
+  ggtitle("SNPs VIP>1")
+```
+
+To avoid saturating the network, for the RNA-Seq, Proteomics, and SNPs omics, we will keep only the top 100 variables ordered from highest to lowest VIP value.
+
+```{r}
+vip_ordered = result_rnaseq[order(-result_rnaseq$Accumulated_VIP), , drop = FALSE]
+top_100_rnaseq = head(vip_ordered, 100)
+
+vip_ordered = result_prot[order(-result_prot$Accumulated_VIP), , drop = FALSE]
+top_100_prot = head(vip_ordered, 100)
+
+vip_ordered = result_snp[order(-result_snp$Accumulated_VIP), , drop = FALSE]
+top_100_snp = head(vip_ordered, 100)
+
+
+top_mirna = result_mirna[result_mirna$Accumulated_VIP > 1, , drop = FALSE]
+top_met = result_met[result_met$Accumulated_VIP > 1, , drop = FALSE]
+```
+
+## 4) ID change
+
+Before generating the network, an identifier (ID) change is performed. The original codes of the variables from Ensembl are replaced with shorter and more descriptive ones.
+
+```{r}
+library(biomaRt)
+```
+
+```{r}
+rnaseq_vars = rownames(top_100_rnaseq)
+mirna_vars = rownames(top_mirna)
+prot_vars = rownames(top_100_prot)
+met_vars = rownames(top_met)
+snp_vars = rownames(top_100_snp)
+```
+
+### 4.1) RNAseq
+
+The actual version of ensembl is in the process of updating, as we can not access it, we access to the latest version.
+
+```{r}
+# Actual: ensembl = useEnsembl(biomart = "genes", dataset = "rnorvegicus_gene_ensembl")
+# Last: 
+ensembl = useEnsembl(biomart = "genes", 
+                     dataset = "rnorvegicus_gene_ensembl", 
+                     version = 112)
+
+
+genes = getBM(attributes = c('ensembl_gene_id', 'external_gene_name'), 
+              filters = 'ensembl_gene_id',
+              values = rnaseq_vars, 
+              mart = ensembl)
+head(genes)
+```
+
+```{r}
+ensembl_df = data.frame(ensembl_gene_id = rnaseq_vars)
+
+association = merge(ensembl_df, genes, by = "ensembl_gene_id", all.x = TRUE, sort = FALSE)
+head(association)
+```
+
+The RNAseq variables are identified with a final '_r'. Also, with the `ifelse` function, we indicate that if a new name/ID for that variable is not found, it must not be removed and must keep the original code.
+
+```{r}
+ext_gene_names = ifelse(is.na(association$external_gene_name), 
+                        association$ensembl_gene_id,
+                        association$external_gene_name)
+
+ext_gene_names = paste0(ext_gene_names, "_r")
+definitive_association_rnaseq = setNames(ext_gene_names, rnaseq_vars)
+
+head(definitive_association_rnaseq, 20)
+```
+
+### 4.2) SNP
+
+```{r}
+genes = getBM(attributes = c('ensembl_gene_id', 'external_gene_name'), 
+              filters = 'ensembl_gene_id',
+              values = snp_vars, mart = ensembl)
+
+ensembl_df = data.frame(ensembl_gene_id = snp_vars)
+association = merge(ensembl_df, genes, by = "ensembl_gene_id", all.x = TRUE, sort = FALSE)
+
+head(association)
+```
+
+The SNPs variables are identified with a final '_s'.
+
+```{r}
+ext_gene_names = ifelse(is.na(association$external_gene_name), 
+                        association$ensembl_gene_id,
+                        association$external_gene_name)
+
+ext_gene_names = paste0(ext_gene_names, "_s")
+definitive_association_snp = setNames(ext_gene_names, snp_vars)
+
+head(definitive_association_snp, 20)
+```
+
+### 4.3) Proteomics
+
+```{r}
+genes = getBM(attributes = c('uniprotswissprot', 'ensembl_gene_id', 'external_gene_name'),
+              filters = 'uniprotswissprot', 
+              values = prot_vars, mart = ensembl)
+
+ensembl_df = data.frame(protein_id = prot_vars)
+association = merge(ensembl_df, genes, by.x = "protein_id", 
+                    by.y = "uniprotswissprot", all.x = TRUE,
+                    sort = FALSE)
+head(association)
+```
+
+The Proteomics variables are identified with a final '_p'.
+
+```{r}
+ext_gene_names = ifelse(is.na(association$external_gene_name), 
+                        association$protein_id,
+                        association$external_gene_name)
+
+ext_gene_names = paste0(ext_gene_names, "_p")
+
+definitive_association_prot = setNames(ext_gene_names, prot_vars)
+head(definitive_association_prot, 20)
+```
+
+### 4.4) miRNAs
+
+For miRNAs, we simply abbreviate by removing the prefix "rno-" that is repeated in all the variables.
+
+```{r}
+short_mirna = gsub("rno-", "", mirna_vars)
+head(short_mirna)
+```
+
+## 5) Network
+
+### 5.1) Nodes
+
+Once the ID changes have been made, these will be the final names of the nodes that will appear in the network. Now, these new names need to be incorporated into the data as the new row names. First, I need to create a new subset of data consisting only of the most relevant variables.
+
+```{r}
+# Example: RNAseq is de global data and rnaseq_vars a list of the most relevant vars
+rnaseq_data = RNAseq[rnaseq_vars, ]
+mirna_data = miRNAs[mirna_vars, ]
+prot_data = Prot[prot_vars, ]
+met_data = Met[met_vars, ]
+snp_data = SNPs[snp_vars, ]
+```
+
+Now we change the names of the variables in this subset of data.
+
+```{r}
+rownames(rnaseq_data) = definitive_association_rnaseq[rownames(rnaseq_data)]
+rownames(snp_data) = definitive_association_snp[rownames(snp_data)]
+rownames(prot_data) = definitive_association_prot[rownames(prot_data)]
+rownames(mirna_data) = short_mirna
+
+head(rnaseq_data)
+head(snp_data)
+head(prot_data)
+head(mirna_data)
+```
+
+```{r, eval=FALSE}
+write.csv(rnaseq_data, file = "RNAseq_network.csv")
+write.csv(mirna_data, file = "miRNAs_network.csv")
+write.csv(prot_data, file = "Prot_network.csv")
+write.csv(met_data, file = "Met_network.csv")
+write.csv(snp_data, file = "SNP_network.csv")
+```
+
+### 5.2) Edges
+
+The nodes are now established, and we will generate the edges of the network. These will be the associations between the variables, that is, the result of applying **Spearman's correlation**. This correlation is more appropriate than others like Kendall or Pearson because it is a non-parametric test focused on finding non-linear correlations. It better distinguishes associations between variables from different blocks.
+
+```{r}
+combined_data = cbind(t(rnaseq_data), t(mirna_data), t(prot_data), t(met_data), t(snp_data))
+combined_correlation = cor(combined_data,
+                           method = "spearman")
+
+# Set the diagonal to zero
+diag(combined_correlation) = 0
+
+edges = data.frame(Var1 = character(0), Var2 = character(0), Correlation = numeric(0))
+```
+
+We set the threshold at 0.75, keeping only correlations that are equal to or greater than this value, both positive and negative. However, since we have observed that with 0.75 we capture too many proteins compared to other omics, we will be more restrictive for this by increasing the threshold to 0.90.
+
+We need to remove duplicates. We use the `sort()` function to alphabetically order the pairs, meaning the variable that comes first will always be included in var1. Afterwards, we remove the duplicates using the `duplicated()` function
+
+```{r}
+threshold = 0.75
+prot_threshold = 0.90
+
+
+for (row in 1:nrow(combined_correlation)) {
+  for (col in 1:ncol(combined_correlation)) {
+    
+    # The name of the combined vars
+    var1 = rownames(combined_correlation)[row]
+    var2 = colnames(combined_correlation)[col]
+    
+    # Alphabetic order
+    ordered_pair = sort(c(var1, var2))
+    var1 = ordered_pair[1]
+    var2 = ordered_pair[2]
+    
+    # Absolute value to compare with the threshold that is positive
+    abs_corr = abs(combined_correlation[row, col])
+    
+    # If they are proteins:
+    if (grepl("_p$", var1) | grepl("_p$", var2)) {
+      
+      if (abs_corr > prot_threshold) {
+        add_data = data.frame(Var1 = var1, Var2 = var2, 
+                              Correlation = combined_correlation[row, col])
+        edges = rbind(edges, add_data)
+      }
+      
+    } else {
+      # If they are other omicas:
+      if (abs_corr > threshold) {
+        add_data = data.frame(Var1 = var1, Var2 = var2, 
+                              Correlation = combined_correlation[row, col])
+        edges = rbind(edges, add_data)
+        
+        duplicates = duplicated(edges)
+        edges = edges[!duplicates, ]
+      }
+    }
+  }
+}
+
+head(edges)
+```
+
+### 5.3) Network
+
+```{r}
+library(igraph)
+```
+
+```{r}
+omics_network = graph_from_data_frame(edges, directed = FALSE, vertices = NULL)
+write_graph(omics_network, file="network.gml", format="gml")
+```
+
+## 6) VIP verification
+
+Finally, we perform a check on the effectiveness of using VIP values as a method for variable selection. It is expected that the model will either maintain or even improve class separation.
+
+For this, we run a DIABLO model, tuning all its parameters but without variable selection. It will work with the entire dataset, in this case, subsets of data consisting exclusively of variables with a VIP greater than 1.
+
+```{r}
+rnaseq_var = rownames(result_rnaseq)[result_rnaseq$Accumulated_VIP > 1]
+mirna_var = rownames(result_mirna)[result_mirna$Accumulated_VIP > 1]
+prot_var = rownames(result_prot)[result_prot$Accumulated_VIP > 1]
+met_var = rownames(result_met)[result_met$Accumulated_VIP > 1]
+snp_var = rownames(result_snp)[result_snp$Accumulated_VIP > 1]
+```
+
+```{r}
+rnaseq_VIP_data = RNAseq[rownames(RNAseq) %in% rnaseq_var, ] # All columns
+dim(rnaseq_VIP_data)
+head(rnaseq_VIP_data)
+```
+
+```{r}
+mirna_VIP_data = miRNAs[rownames(miRNAs) %in% mirna_var, ]
+prot_VIP_data = Prot[rownames(Prot) %in% prot_var, ]
+met_VIP_data = Met[rownames(Met) %in% met_var, ]
+snp_VIP_data = SNPs[rownames(SNPs) %in% snp_var, ]
+
+t_rnaseq_VIP_data = t(rnaseq_VIP_data)
+t_mirna_VIP_data = t(mirna_VIP_data)
+t_prot_VIP_data = t(prot_VIP_data)
+t_met_VIP_data = t(met_VIP_data)
+t_snp_VIP_data = t(snp_VIP_data)
+```
+
+```{r}
+data_VIP = list(rnaseq = t_rnaseq_VIP_data, 
+                mirna = t_mirna_VIP_data, 
+                prot = t_prot_VIP_data, 
+                met = t_met_VIP_data, 
+                snp = t_snp_VIP_data)
+```
+
+```{r}
+diablo_VIP = block.splsda(X = data_VIP, Y = Y, scale = FALSE, ncomp = 2, 
+                          design = definitive_design, 
+                          near.zero.var = TRUE)
+```
+ 
+We observe the distribution of data with "score plots".
+
+```{r}
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "rnaseq", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE)
+
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "rnaseq", ind.names = TRUE, 
+          ellipse = TRUE, legend = TRUE)
+```
+
+```{r}
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "mirna", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE)
+
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "mirna", ind.names = TRUE, 
+          ellipse = TRUE, legend = TRUE)
+```
+
+```{r}
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "prot", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE)
+
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "prot", ind.names = TRUE, 
+          ellipse = TRUE, legend = TRUE)
+```
+
+```{r}
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "met", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE)
+
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "met", ind.names = TRUE, 
+          ellipse = TRUE, legend = TRUE)
+```
+
+```{r}
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "snp", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE)
+
+plotIndiv(diablo_VIP, comp = 1:2, blocks = "snp", ind.names = TRUE, 
+          ellipse = TRUE, legend = TRUE)
+```
+
+If we compare with the previously generated distribution plots, we can see that no major changes occur. The way the data was separated before and how it is separated now using only the most representative variables maintains the same pattern. Moreover, we observe a certain improvement as the classes are now more distinctly separated.
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+
+
+
+
+
+
+
+
+

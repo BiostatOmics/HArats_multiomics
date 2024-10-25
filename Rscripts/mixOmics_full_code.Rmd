@@ -1,0 +1,679 @@
+---
+title: "mixOmics"
+author: "Sofia Cámara Sánchez"
+date: "2024-07-01"
+output: html_document
+---
+
+## DIABLO (Data Integration Analysis for Biomarker discovery using Latent cOmponents)
+
+### 1) Data
+
+We load the study data, the different omics, and adjust them as appropriate for the analysis.
+
+```{r}
+library(mixOmics)
+```
+
+```{r}
+miRNAs = read.table("miRNAs_data.txt", header = TRUE, row.names = 1, 
+                    sep = "\t", stringsAsFactors = TRUE)
+RNAseq = read.table("RNAseq_data.txt", header = TRUE, row.names = 1, 
+                    sep = "\t", stringsAsFactors = TRUE)
+Prot = read.table("proteomic_data.txt", header = TRUE, row.names = 1, 
+                  sep = "\t", stringsAsFactors = TRUE)
+Met = read.table("metabolomic_data.txt", header = TRUE, row.names = 1, 
+                 sep = "\t", stringsAsFactors = TRUE)
+SNPs = read.csv("SNPs_gene.csv", header = TRUE, row.names = 1, sep = ",")
+
+Met = log2(Met)
+```
+
+```{r}
+t_miRNAs = t(miRNAs)
+t_RNAseq = t(RNAseq)
+t_Prot = t(Prot)
+t_Met = t(Met)
+t_SNPs = t(SNPs)
+```
+
+```{r}
+t_miRNAs = scale(t_miRNAs, center = TRUE, scale = FALSE)
+t_RNAseq = scale(t_RNAseq, center = TRUE, scale = FALSE)
+t_Prot = scale(t_Prot, center = TRUE, scale = FALSE)
+t_Met = scale(t_Met, center = TRUE, scale = TRUE)
+t_SNPs = scale(t_SNPs, center = TRUE, scale = FALSE)
+```
+
+All omics are logarithmic transformed. Data is transposed because DIABLO reads the samples in columns and the study variables in rows. It is required that the number of samples (columns) be the same in each block.
+
+```{r}
+data = list(rnaseq = t_RNAseq, 
+            mirna = t_miRNAs, 
+            prot = t_Prot, 
+            met = t_Met, 
+            snp = t_SNPs)
+```
+
+```{r}
+ lapply(data, dim)
+```
+
+We now have the predictor variable X (data), and we define the response variable Y as the classes to be predicted by the model. It is a categorical variable to predict healthy rat - controls (C) or sick rat - hyperammonemic (HA).
+
+```{r}
+Y = rep(c("C", "H"), each = 8)
+summary(Y)
+```
+
+### 2) Parameter choice
+
+We create the Design Matrix, choose the value of 1 (association) to connect the different blocks, and set the diagonal to 0 (absence of association).
+
+```{r}
+design = matrix(1, ncol = length(data), nrow = length(data),
+                dimnames = list(names(data), names(data)))
+diag(design) = 0
+design
+```
+
+```{r}
+lapply(data, function(x){rownames(x)})
+```
+
+A first DIABLO model without variable selection is run, which will later help us select the optimal components and variables for the final model.
+
+```{r}
+diablo = block.splsda(X = data, Y = Y, scale = FALSE, ncomp = 4, 
+                      design = design, near.zero.var = TRUE)
+```
+
+The `plotDiablo` function is a diagnostic tool used to verify if the correlation between components from each dataset has been maximized according to the design matrix. 
+
+```{r}
+plotDiablo(diablo, ncomp = 1)
+```
+
+We select component 1 because it covers the most variability and will best separate the classes. We will use these values to redefine the Design Matrix in the final model.  
+
+To choose the optimal number of components, we will use the `perf` function with LOOCV (Leave One Out Cross Validation) due to the small number of samples we have. 
+
+```{r}
+perf_diablo = perf(diablo, validation = 'loo')
+plot(perf_diablo)
+```
+
+This function is used to evaluate the performance of the model. We look at the BER (Balanced Error Rate) and the ER (Error Rate) by component. Rate of misclassified samples. The optimal number of components is where a sharp drop in error occurs. We will choose the component that makes the BER and ER the smallest across the three types of distances. In this case, the ER and BER values are the same because there is homogeneity in the class proportions.
+
+It is observed that the optimal number is 1 to 2 components. Some plots from the `plotIndiv` function help us see the behavior of the data and deduce which components best separate it.
+
+#### 2.1) RNAseq
+
+```{r}
+plotIndiv(diablo, comp = 1:2, blocks = "rnaseq", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE,
+          xlim = c(-50, 50), ylim = c(-50, 50))
+```
+
+```{r}
+plotIndiv(diablo, comp = 3:4, blocks = "rnaseq", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE,
+          xlim = c(-40, 40), ylim = c(-40, 40))
+```
+
+#### 2.2) miRNAs
+
+```{r}
+plotIndiv(diablo, comp = 1:2, blocks = "mirna", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE,
+          xlim = c(-10, 10), ylim = c(-10, 10))
+```
+
+```{r}
+plotIndiv(diablo, comp = 3:4, blocks = "mirna", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE)
+```
+
+#### 2.3) Proteomics
+
+```{r}
+plotIndiv(diablo, comp = 1:2, blocks = "prot", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE,
+          xlim = c(-60000, 60000), ylim = c(-60000, 60000))
+```
+
+```{r}
+plotIndiv(diablo, comp = 3:4, blocks = "prot", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE)
+```
+
+#### 2.4) Metabolomics
+
+```{r}
+plotIndiv(diablo, comp = 1:2, blocks = "met", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE,
+          xlim = c(-20, 20), ylim = c(-20, 20))
+```
+
+```{r}
+plotIndiv(diablo, comp = 3:4, blocks = "met", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE)
+```
+
+#### 2.5) SNPs
+
+```{r}
+plotIndiv(diablo, comp = 1:2, blocks = "snp", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE,
+          xlim = c(-200, 200), ylim = c(-200, 200))
+```
+
+```{r}
+plotIndiv(diablo, comp = 3:4, blocks = "snp", ind.names = TRUE, 
+          ellipse = FALSE, legend = TRUE)
+```
+
+As we can see, components 1 and 2 indeed perform a better separation of the data than components 3 and 4.
+
+After selecting the optimal number of components, we now need to select the optimal number of variables per block. To do this, we will use the `tune.block.splsda` function. We will perform various tests with different numbers of variables for the **keepX** argument.
+
+```{r, eval=FALSE}
+# tried 1
+# Computationally excessive, do not run
+set.seed(123)
+test_keepX = list (rnaseq = c(seq(100, 500, 50)),
+                   mirna = c(seq(100, 500, 20)),
+                   prot = c(seq(100, 500, 50)),
+                   met = c(1:10, seq(20, 120, 10), 121:122),
+                   snp = c(seq(100, 500, 50)))
+
+t1 = proc.time()
+
+tune_TCGA = tune.block.splsda(X = data, Y = Y, ncomp = 2,    # 2 components !!
+                              test.keepX = test_keepX, design = design,
+                              validation = 'loo',
+                              dist = "mahalanobis.dist",
+                              near.zero.var = TRUE)
+
+t2 = proc.time()
+running_time = t2 - t1; running_time
+```
+
+```{r, eval=FALSE}
+list.keepX = tune_TCGA$choice.keepX # set the optimal values of features to retain
+list.keepX
+```
+
+```{r, eval=FALSE}
+# tried 2
+set.seed(123)
+test_keepX = list (rnaseq = c(seq(100, 300, 100)),
+                   mirna = c(seq(100, 300, 100)),
+                   prot = c(seq(100, 300, 100)),
+                   met = c(1:10, seq(20, 100, 10)),
+                   snp = c(seq(100, 300, 100)))
+
+t1 = proc.time()
+
+tune_TCGA = tune.block.splsda(X = data, Y = Y, ncomp = 2,
+                              test.keepX = test_keepX, design = design,
+                              validation = 'loo',
+                              dist = "mahalanobis.dist",
+                              near.zero.var = TRUE)
+
+t2 = proc.time()
+running_time = t2 - t1; running_time
+```
+
+```{r, eval=FALSE}
+list.keepX = tune_TCGA$choice.keepX 
+list.keepX
+```
+
+```{r, eval=FALSE}
+# tried 3
+# Computationally excessive, do not run
+set.seed(123)
+test_keepX = list  (rnaseq = c(seq(100, 300, 50)),
+                    mirna = c(seq(100, 300, 50)),
+                    prot = c(seq(100, 300, 50)),
+                    met = c(1:40),
+                    snp = c(seq(100, 400, 100)))
+
+
+t1 = proc.time()
+
+tune_TCGA = tune.block.splsda(X = data, Y = Y, ncomp = 2,
+                              test.keepX = test_keepX, design = design,
+                              validation = 'loo',
+                              dist = "mahalanobis.dist",
+                              near.zero.var = TRUE)
+
+t2 = proc.time()
+running_time = t2 - t1; running_time
+```
+
+```{r, eval=FALSE}
+list.keepX = tune_TCGA$choice.keepX 
+list.keepX
+```
+
+```{r, eval=FALSE}
+# tried 4
+set.seed(123)
+test_keepX = list (rnaseq = c(seq(100, 500, 200)),
+                   mirna = c(seq(100, 500, 200)),
+                   prot = c(seq(100, 500, 200)),
+                   met = c(1:10, seq(15, 115, 10)),
+                   snp = c(seq(100, 500, 200)))
+
+
+t1 = proc.time()
+
+tune_TCGA = tune.block.splsda(X = data, Y = Y, ncomp = 2,
+                              test.keepX = test_keepX, design = design,
+                              validation = 'loo',
+                              dist = "mahalanobis.dist",
+                              near.zero.var = TRUE)
+
+t2 = proc.time()
+running_time = t2 - t1; running_time
+```
+
+```{r, eval=FALSE}
+list.keepX = tune_TCGA$choice.keepX 
+list.keepX
+```
+
+### 3) Final Model
+
+```{r}
+ncomp = 2
+
+list.keepX_definitive = list(rnaseq = c(100,200), 
+                             mirna = c(200,100),
+                             prot = c(100,300), 
+                             met = c(7,30), 
+                             snp = c(500,100))
+```
+
+```{r}
+definitive_design = matrix(0, ncol = length(data), nrow = length(data),
+                           dimnames = list(names(data), names(data)))
+
+definitive_design[1,2] = 0.57
+definitive_design[1,3] = 0.85
+definitive_design[1,4] = 0.44
+definitive_design[1,5] = 0.9
+
+definitive_design[2,1] = 0.57
+definitive_design[2,3] = 0.62
+definitive_design[2,4] = 0.1
+definitive_design[2,5] = 0.6
+
+definitive_design[3,1] = 0.85
+definitive_design[3,2] = 0.62
+definitive_design[3,4] = 0.45
+definitive_design[3,5] = 0.95
+
+definitive_design[4,1] = 0.44
+definitive_design[4,2] = 0.1
+definitive_design[4,3] = 0.45
+definitive_design[4,5] = 0.39
+
+definitive_design[5,1] = 0.9
+definitive_design[5,2] = 0.6
+definitive_design[5,3] = 0.95
+definitive_design[5,4] = 0.39
+
+definitive_design
+```
+
+```{r}
+final.diablo.model = block.splsda(X = data, Y = Y, ncomp = ncomp,
+                     keepX = list.keepX_definitive, design = definitive_design,
+                     near.zero.var = TRUE)
+```
+
+The warning message informs that the outcome Y has been included in the Design Matrix,
+so that the covariance between each block’s component and the outcome is maximized.
+
+```{r}
+final.diablo.model$design
+```
+
+We can view and extract the variables selected as most relevant by the model using the `selectVar` function. For example, metabolomics:
+
+```{r}
+selectVar(final.diablo.model, block = 'met', comp = 1)$met$name
+```
+
+```{r}
+selectVar(final.diablo.model, block = 'met', comp = 2)$met$name
+```
+
+The `selectVar` function also returns the list of variables considered most relevant, ordered by their loading weight value, from highest to lowest weight.
+
+```{r}
+selectVar(final.diablo.model, block = 'met', comp = 1)$met$value
+```
+
+With the `plotLoadings` function, we can see the loading weights of some of the variables that contribute the most ("max") or the least ("min") to each component and class (represented by colors). Also on average (method = ‘mean’) or using the median (method = ‘median’). That is, how important that variable is for discriminating between classes.
+
+```{r}
+plotLoadings(final.diablo.model, comp = 1, contrib = 'max')
+```
+
+```{r}
+plotLoadings(final.diablo.model, comp = 1, contrib = 'min')
+```
+
+We can also examine the **stability** of the variables selected with the `perf` function. Each variable’s stability that is selected across the Cross Validations runs is represented with a vertical bar. We often observe a decrease in stability when more components are added in the model.
+
+```{r}
+perf_final_diablo = perf(final.diablo.model, validation = 'loo')
+```
+
+```{r}
+perf_final_diablo$features$stable$nrep1$met
+```
+
+We obtain a list of the variables considered the most stable. These are robust features for the model as they appear recurrently in the different evaluation models generated. This indicates that they play an important role in class discrimination.
+
+Error rate per component (proportion of incorrect predictions) based on the majority vote.
+
+```{r}
+perf_final_diablo$MajorityVote.error.rate
+```
+
+A visual aid to evaluate the model's performance is the **ROC curve (Receiver Operating Characteristic curve)**. It shows the relationship between the True Positive Rate (TPR, Y-axis) and the False Positive Rate (FPR, X-axis). We extract the **AUROC (Area Under the ROC Curve)**, where values close to 1 indicate good classification and values close to 0 indicate poor classification. A value of 0.5 suggests no better discrimination than random chance.
+
+```{r}
+auroc(final.diablo.model, roc.block = "rnaseq", roc.comp = 1)
+auroc(final.diablo.model, roc.block = "mirna", roc.comp = 1)
+auroc(final.diablo.model, roc.block = "prot", roc.comp = 1)
+auroc(final.diablo.model, roc.block = "met", roc.comp = 1)
+auroc(final.diablo.model, roc.block = "snp", roc.comp = 1)
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+.............................................................................................................
+
+```{r}
+diablo_2 = block.splsda(X = data, Y = Y, scale = FALSE, ncomp = 2, 
+                        design = definitive_design, near.zero.var = TRUE)
+```
+
+```{r}
+plotIndiv(diablo_2, comp = 1:2, blocks = "rnaseq", ind.names = TRUE, ellipse = TRUE, legend = TRUE,
+          xlim = c(-50, 50), ylim = c(-50, 50))
+```
+
+```{r}
+plotIndiv(diablo_2, comp = 1:2, blocks = "mirna", ind.names = TRUE, ellipse = TRUE, legend = TRUE,
+          xlim = c(-10, 10), ylim = c(-10, 10))
+```
+
+```{r}
+plotIndiv(diablo_2, comp = 1:2, blocks = "prot", ind.names = TRUE, ellipse = TRUE, legend = TRUE,
+          xlim = c(-60000, 60000), ylim = c(-60000, 60000))
+```
+
+```{r}
+plotIndiv(diablo_2, comp = 1:2, blocks = "met", ind.names = TRUE, ellipse = TRUE, legend = TRUE,
+          xlim = c(-25, 25), ylim = c(-25, 25))
+```
+
+```{r}
+plotIndiv(diablo_2, comp = 1:2, blocks = "snp", ind.names = TRUE, ellipse = TRUE, legend = TRUE,
+          xlim = c(-200, 200), ylim = c(-200, 200))
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1005752#pcbi.1005752.s001
