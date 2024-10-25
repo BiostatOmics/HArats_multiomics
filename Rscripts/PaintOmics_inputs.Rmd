@@ -1,0 +1,268 @@
+---
+title: "mixOmics 14 (Part 1)"
+author: "Sofia Cámara Sánchez"
+date: "2024-09-16"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+Obtenemos de la base de UniProt un listado con todas las proteínas que son **factores de transcripción** en *Rattus norvegicus*.
+
+```{r}
+FT = read.table("Rattus_norvegicus_FT.list", header = FALSE)
+
+head(FT)
+```
+
+## 1) Limma
+
+```{r}
+library(limma)
+```
+
+```{r}
+miRNAs = read.table("miRNAs_data.txt", header = TRUE, row.names = 1, 
+                    sep = "\t", stringsAsFactors = TRUE)
+RNAseq = read.table("RNAseq_data.txt", header = TRUE, row.names = 1, 
+                    sep = "\t", stringsAsFactors = TRUE)
+Prot = read.table("proteomic_data.txt", header = TRUE, row.names = 1, 
+                  sep = "\t", stringsAsFactors = TRUE)
+Met = read.table("metabolomic_data.txt", header = TRUE, row.names = 1, 
+                 sep = "\t", stringsAsFactors = TRUE)
+SNPs = read.csv("SNPs_gene.csv", header = TRUE, row.names = 1, sep = ",")
+
+Met = log2(Met)
+```
+
+```{r}
+samples_rnaseq = colnames(RNAseq)
+samples_mirna = colnames(miRNAs)
+samples_prot = colnames(Prot)
+samples_met = colnames(Met)
+samples_snp = colnames(SNPs)
+```
+
+Para cada ómica, hacemos la suma de todos los valores por fila de las 8 primeras columnas para C y las 8 últimas para H. Es decir, sumamos todos los valores de la fila 1 de la columna 1 a la 8 y dividimos entre 2.
+
+```{r}
+C_rnaseq = rowMeans(RNAseq[, 1:8])
+H_rnaseq = rowMeans(RNAseq[, 9:16])
+
+C_mirna = rowMeans(miRNAs[, 1:8])
+H_mirna = rowMeans(miRNAs[, 9:16])
+
+C_prot = rowMeans(Prot[, 1:8])
+H_prot = rowMeans(Prot[, 9:16])
+
+C_met = rowMeans(Met[, 1:8])
+H_met = rowMeans(Met[, 9:16])
+
+C_snp = rowMeans(SNPs[, 1:8])
+H_snp = rowMeans(SNPs[, 9:16])
+
+head(C_rnaseq)
+```
+
+```{r}
+mean_expression_rnaseq = matrix(c(C_rnaseq,H_rnaseq), ncol=2)
+colnames(mean_expression_rnaseq) = c("Control","Hyperammonemic")
+rownames(mean_expression_rnaseq) = rownames(RNAseq)
+
+mean_expression_mirna = matrix(c(C_mirna,H_mirna), ncol=2)
+colnames(mean_expression_mirna) = c("Control","Hyperammonemic")
+rownames(mean_expression_mirna) = rownames(miRNAs)
+
+mean_expression_prot = matrix(c(C_prot,H_prot), ncol=2)
+colnames(mean_expression_prot) = c("Control","Hyperammonemic")
+rownames(mean_expression_prot) = rownames(Prot)
+
+mean_expression_met = matrix(c(C_met,H_met), ncol=2)
+colnames(mean_expression_met) = c("Control","Hyperammonemic")
+rownames(mean_expression_met) = rownames(Met)
+
+mean_expression_snp = matrix(c(C_snp,H_snp), ncol=2)
+colnames(mean_expression_snp) = c("Control","Hyperammonemic")
+rownames(mean_expression_snp) = rownames(SNPs)
+
+head(mean_expression_met)
+```
+
+```{r}
+experimental_design = model.matrix(~ -1 + factor(rep(c(1, 2), each = 8)))
+colnames(experimental_design) = c("C","H")
+
+experimental_design
+```
+
+```{r}
+ln_fit_rnaseq = lmFit(RNAseq, experimental_design)
+ln_fit_mirna = lmFit(miRNAs, experimental_design)
+ln_fit_prot = lmFit(Prot, experimental_design)
+ln_fit_met = lmFit(Met, experimental_design)
+ln_fit_snp = lmFit(SNPs, experimental_design)
+
+head(ln_fit_rnaseq)
+```
+
+Comparamos la expresion de los genes de la condición experimental (H, -1) con la Control (C, +1).
+
+```{r}
+contrast_matrix = makeContrasts(H-C, levels = c("C","H"))
+head(contrast_matrix)
+```
+
+```{r}
+cont_ln_fit_rnaseq = contrasts.fit(ln_fit_rnaseq, contrast_matrix)
+cont_results_rnaseq = eBayes(cont_ln_fit_rnaseq)
+
+cont_ln_fit_mirna = contrasts.fit(ln_fit_mirna, contrast_matrix)
+cont_results_mirna = eBayes(cont_ln_fit_mirna)
+
+cont_ln_fit_prot = contrasts.fit(ln_fit_prot, contrast_matrix)
+cont_results_prot = eBayes(cont_ln_fit_prot)
+
+cont_ln_fit_met = contrasts.fit(ln_fit_met, contrast_matrix)
+cont_results_met = eBayes(cont_ln_fit_met)
+
+cont_ln_fit_snp = contrasts.fit(ln_fit_snp, contrast_matrix)
+cont_results_snp = eBayes(cont_ln_fit_snp)
+```
+
+```{r}
+nrow(RNAseq)
+nrow(miRNAs)
+nrow(Prot)
+nrow(Met)
+nrow(SNPs)
+```
+
+```{r}
+contrasts_rnaseq = topTable(cont_results_rnaseq, number = 16362, 
+                            coef = 1, sort.by = "logFC")
+contrasts_mirna = topTable(cont_results_mirna, number = 504, 
+                            coef = 1, sort.by = "logFC")
+contrasts_prot = topTable(cont_results_prot, number = 5160, 
+                            coef = 1, sort.by = "logFC")
+contrasts_met = topTable(cont_results_met, number = 122, 
+                            coef = 1, sort.by = "logFC")
+contrasts_snp = topTable(cont_results_snp, number = 13654, 
+                            coef = 1, sort.by = "logFC")
+
+head(contrasts_mirna)
+```
+
+```{r}
+FC_rnaseq = data.frame(ID.rnaseq = rownames(contrasts_rnaseq),
+                       logFC = contrasts_rnaseq$logFC)
+
+FC_mirna = data.frame(ID.mirna = rownames(contrasts_mirna),
+                      logFC = contrasts_mirna$logFC)
+
+FC_prot = data.frame(ID.prot = rownames(contrasts_prot),
+                     logFC = contrasts_prot$logFC)
+
+FC_met = data.frame(ID.met = rownames(contrasts_met),
+                    logFC = contrasts_met$logFC)
+
+FC_snp = data.frame(ID.snp = rownames(contrasts_snp),
+                    logFC = contrasts_snp$logFC)
+
+head(FC_rnaseq)
+```
+
+```{r}
+write.table(FC_rnaseq, file = "rnaseq_A.txt",
+            sep = "\t", row.names = FALSE, 
+            col.names = TRUE, quote = FALSE)
+
+write.table(FC_mirna, file = "mirna_A.txt",
+            sep = "\t", row.names = FALSE, 
+            col.names = TRUE, quote = FALSE)
+
+write.table(FC_prot, file = "prot_A.txt",
+            sep = "\t", row.names = FALSE, 
+            col.names = TRUE, quote = FALSE)
+
+write.table(FC_met, file = "met_A.txt",
+            sep = "\t", row.names = FALSE, 
+            col.names = TRUE, quote = FALSE)
+
+write.table(FC_snp, file = "snp_A.txt",
+            sep = "\t", row.names = FALSE, 
+            col.names = TRUE, quote = FALSE)
+```
+
+## 2) Spearman correlation
+
+Finalmente, para hallar las asociaciones más relevantes entre gen y miRNAs, vamos a realizar un estudio de asociaciones basado en la correlación de Spearman y nos quedaremos con aquellas correlaciones que sean más pequeñas que -0'75.
+
+```{r}
+union = cbind(t(RNAseq), t(miRNAs))
+corr = cor(union, method = "spearman")
+```
+
+```{r}
+# Hacer 0 la diagonal
+diag(corr) = 0
+```
+
+```{r}
+rel_association = data.frame(Gene = character(0), miRNAs = character(0), 
+                             Correlation = numeric(0))
+```
+
+```{r}
+threshold = -0.75
+indices = which(corr < threshold, arr.ind = TRUE)
+
+rel_association = data.frame(
+  Gene = rownames(corr)[indices[, 1]],
+  miRNAs = colnames(corr)[indices[, 2]],
+  Correlation = corr[indices]
+)
+
+head(rel_association)
+```
+
+Se han generado tres tipos de asociaciones: gen-gen, miRNA-miRNA y gen-miRNA. Sin embargo, solo nos interesa el último tipo de asociación para PaintOmics.
+
+Primero de todo vamos a eliminar los duplicados, para ello vamos a exigir que solo haya variables de genes en la columna "Gene" y solo variables de micro-ARN en la columna miRNAs.
+
+```{r}
+ID_genes = rownames(RNAseq)
+```
+
+Elimino de la columna 1 de "rel_associations" todas las filas que contengan un nombre que no aparezca en "ID_genes". Es decir, elimino todo lo que no sea un gen (será un miRNAs). Con esto me quito las asociaciones miRNA-miRNA y los duplicados gen-miRNA / miRNA-gen.
+
+Posteriormente, de la columna 2 de "rel_associations" elimino las filas que sean genes, que sí aparezcan en "ID_genes" para quedarme solo con miRNAs. Con esto me quito las asociaciones gen-gen.
+
+```{r}
+filtered_correlations = rel_association[rel_association$Gene %in% ID_genes, ]
+filtered_correlations = filtered_correlations[!filtered_correlations$miRNAs %in% ID_genes, ]
+
+head(filtered_correlations)
+```
+
+Finalmente, PaintOmics solo necesita los nombres de las variables que tienen asociaciones más relevantes, eliminamos la columna de correlación y exportamos.
+
+```{r}
+PaintO_asscociations = data.frame(mirna = filtered_correlations$miRNAs,
+                                  gene.name = filtered_correlations$Gene)
+```
+
+```{r, eval=FALSE}
+write.table(PaintO_asscociations, file = "gene_miRNA_corr.txt",
+            sep = "\t", row.names = FALSE, quote = FALSE)
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+
+
