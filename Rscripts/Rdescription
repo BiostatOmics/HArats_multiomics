@@ -1,1 +1,4 @@
-
+# 1. mixOmics_full_code : Study of the mixOmics package and application of the multi-omics integration tool DIABLO.
+# 2. VIP_full_code : Variable selection using VIP (Variable Importance in Projection), ID conversion, network generation for Cytoscape, and study of class distribution.
+# 3. PaintOmics_inputs : Data preparation process for all my omics input for the PaintOmics integration tool.
+# 4. Transcription_Factors : Search for transcription factors in proteins and the genes encoding them.
